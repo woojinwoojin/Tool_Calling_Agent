@@ -44,6 +44,7 @@ SYNTHESIS_PROMPT = """당신은 시니어 데이터 분석가입니다. 같은 �
 - 답변끼리 겹치는 내용은 한 번만 쓰고, 서로 다른 원인은 함께 정리하세요.
 - answer는 5~8문장, suggested_actions는 데이터 근거가 있는 비즈니스 액션만 3개 이내로 쓰세요."""
 
+# agent.py의 standard 모드가 이 설정에서 나왔다. 측정 당시 조건을 재현하려고 여기 그대로 둔다.
 WIDE = Mode(
     name="wide",
     max_steps=2,

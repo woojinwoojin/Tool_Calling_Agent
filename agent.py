@@ -1,7 +1,7 @@
 """질문 → LLM이 도구 선택 → Python 실행 → 결과 → LLM → 답변 + 제안 액션.
 
 프레임워크 없이 OpenAI Responses API로 tool calling 루프를 직접 구현한다.
-실행: .\\.venv\\Scripts\\python agent.py [--mode fast|careful]
+실행: .\\.venv\\Scripts\\python agent.py [--mode fast|standard|careful]
 """
 
 import argparse
@@ -43,9 +43,24 @@ MODES = {
 - "왜"를 묻는 질문에는 원인을 나눠 보여주는 도구(breakdown, compare_periods, discount_impact)를 고르세요.
   breakdown과 compare_periods 결과에는 합계(total)가 들어 있으므로 get_summary를 따로 부를 필요가 없습니다.
 - answer는 3~5문장으로, 결론과 핵심 숫자만 쓰세요.
-- 원인을 더 좁혀야 하는 질문이면 answer 끝에 "신중 모드에서 더 자세히 확인할 수 있습니다."라고 덧붙이세요.
+- 원인을 더 좁혀야 하는 질문이면 answer 끝에 "기본/신중 모드에서 더 자세히 확인할 수 있습니다."라고 덧붙이세요.
 - suggested_actions는 1개 이내로 제안하세요.""",
     ),
+    # experiments/compare_modes.py의 "B. wide". 병렬 fast + 종합보다 빠르고, 답변은 careful과 비슷했다.
+    "standard": Mode(
+        name="standard",
+        max_steps=2,  # 한 라운드에 넓게 조회 → 바로 답변
+        max_tool_calls=6,
+        reasoning_effort="low",
+        guide="""[기본 모드]
+- 원인이 될 만한 여러 관점(부문, 할인, 지역, 기간)을 고려해, 필요한 도구를 최대 6개까지 한 번에 동시에 호출하세요.
+  결과를 받은 뒤에는 도구를 더 호출할 수 없습니다.
+- breakdown과 compare_periods 결과에는 합계(total)가 들어 있으므로 get_summary를 따로 부를 필요가 없습니다.
+- "지난달", "요즘"처럼 기간이 모호하면 어떤 기간으로 해석했는지 answer에 밝히세요.
+- answer는 5~8문장으로, 결론과 핵심 숫자만 쓰세요.
+- suggested_actions는 3개 이내로 제안하세요.""",
+    ),
+    # 결과를 보고 다음 조회를 정해 한 단계씩 파고든다 (예: Technology 감소 → 그 안의 하위 카테고리).
     "careful": Mode(
         name="careful",
         max_steps=6,
@@ -58,7 +73,7 @@ MODES = {
 - suggested_actions는 3개 이내로 제안하세요.""",
     ),
 }
-DEFAULT_MODE = "careful"
+DEFAULT_MODE = "standard"
 
 SYSTEM_PROMPT = """당신은 이커머스 회사의 시니어 데이터 분석가입니다.
 사용자 질문에 답하기 위해 필요한 분석 도구를 골라 호출하고, 도구 결과만 근거로 한국어로 답하세요.
@@ -191,7 +206,7 @@ def print_answer(answer: dict) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="CSV 분석 에이전트")
-    parser.add_argument("--mode", choices=list(MODES), default=DEFAULT_MODE, help="fast: 빠른 답변, careful: 신중")
+    parser.add_argument("--mode", choices=list(MODES), default=DEFAULT_MODE, help="fast: 빠른 답변(약 4초), standard: 기본(약 8초), careful: 신중(10~20초)")
     mode = MODES[parser.parse_args().mode]
 
     load_dotenv()
@@ -202,7 +217,7 @@ def main() -> None:
 
     # 후속 질문("그럼 Tables는?")이 앞 대화를 참고할 수 있도록 기록을 이어서 쓴다.
     history: list = []
-    print("질문을 입력하세요. 모드 전환: /fast, /careful (종료: 빈 줄 또는 Ctrl+C)")
+    print("질문을 입력하세요. 모드 전환: /fast, /standard, /careful (종료: 빈 줄 또는 Ctrl+C)")
     while True:
         try:
             question = input(f"[{mode.name}] 질문> ").strip()

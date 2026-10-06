@@ -48,22 +48,34 @@
 ## 답변 모드 (`agent.py`의 `MODES`)
 응답 시간은 LLM 왕복 횟수, 추론 토큰, 출력 길이가 좌우한다. 도구는 로컬에서 바로 실행되므로 호출 개수는 속도에 거의 영향이 없다.
 
-| | 빠른 답변 (`fast`) | 신중 (`careful`, 기본) |
-|---|---|---|
-| LLM 왕복 | 최대 2번 (도구 1라운드 → 답변) | 최대 6번 |
-| 도구 호출 | 최대 3개 (넘으면 그 호출에 error 반환) | 최대 10개 |
-| 추론 강도 | `none` | `medium` |
-| 답변 | 3~5문장, 액션 1개 | 비교 기준·기간 해석을 밝히고 액션 3개 |
+| | `fast` | `standard` (기본) | `careful` |
+|---|---|---|---|
+| 용도 | 빠른 확인 | 대부분의 질문 | 결과를 보고 한 단계씩 파고들어야 할 때 |
+| LLM 왕복 | 최대 2번 | 최대 2번 | 최대 6번 |
+| 도구 호출 | 최대 3개 | 최대 6개 (한 라운드에 넓게) | 최대 10개 |
+| 추론 강도 | `none` | `low` | `medium` |
+| 답변 | 3~5문장, 액션 1개 | 5~8문장, 액션 3개 | 비교 기준을 밝히고 액션 3개 |
+| 측정 시간 | 약 4초 | 7~9초 | 9~20초 |
 
-같은 질문으로 측정 (`gpt-5.4-mini`):
+상한을 넘은 도구 호출에도 error를 output으로 돌려준다. 모든 `function_call`에는 짝이 되는 output이 있어야 하기 때문이다.
 
-| 질문 | fast | careful |
-|---|---|---|
-| Furniture 이익률이 왜 낮아? | 3.9초 / 도구 2 / 입력 4.9K — 할인 구간 원인 | 8.4초 / 도구 5 / 입력 5.6K — 하위 카테고리 + 할인 + 다른 카테고리와 비교 |
-| 지난달 매출이 왜 떨어졌어? | 4.7초 / 도구 2 / 입력 5.1K — East 지역 감소 | 18.5초 / 도구 7 / 입력 26K — Technology·East 교차, 주문·고객 수까지 |
-| Central 지역 이익률이 왜 낮아? | 4.3초 / 도구 2 / 입력 5.0K — Furniture 적자 + 고할인 | 12.1초 / 도구 10 / 입력 14K — 다른 지역 비교, 카테고리별 할인까지 |
+### 실험: 병렬 fast + 종합 vs 넓은 fast vs careful
+"fast가 2~3배 빠르니 관점이 다른 fast 3개를 병렬로 돌리고 종합하면 어떨까?"를 측정했다.
+([`experiments/compare_modes.py`](experiments/compare_modes.py), 결과와 답변 원문은 [`experiments/results.md`](experiments/results.md))
 
-fast 모드에서 처음에는 "왜" 질문에 `get_summary`만 불러 원인을 답하지 못했다 → 지침에 "원인을 나누는 도구를 고르고, 합계는 breakdown에 이미 있다"를 넣어 해결.
+| 질문 (2회 평균) | A. 병렬 fast 3 + 종합 | B. 넓은 fast (→ `standard`) | C. careful |
+|---|---|---|---|
+| Furniture 이익률이 왜 낮아? | 9.5초 / 입력 16.6K | **7.1초** / 5.6K | 8.8초 / 5.4K |
+| 지난달 매출이 왜 떨어졌어? | 10.2초 / 18.3K | **8.9초** / 6.4K | 20.1초 / 20.1K |
+| Central 지역 이익률이 왜 낮아? | 8.8초 / 16.6K | **8.5초** / 6.1K | 14.8초 / 13.9K |
+
+- **A는 B보다 늘 느리고 토큰은 약 3배.** 병렬이어도 가장 느린 fast(4~5초)에 종합 호출(4~5초)이 더해진다.
+- **A의 종합 단계가 근거 없는 인과를 만들었다.** "Tables 적자"와 "고할인 구간 적자"라는 서로 다른 관점의 결과를
+  "Tables에 높은 할인이 붙어서"로 이어 붙였지만, Tables의 할인을 조회한 도구는 없었다. 핵심 숫자(감소분의 80.7%)가 빠지기도 했다.
+- **B와 C는 답변 내용이 대부분 비슷했다.** 차이는 C만 결과를 보고 한 단계 더 들어간다는 점(Technology 감소 → Machines/Phones/Copiers).
+- 결론: 같은 모델로 관점만 나눈 병렬화보다 **한 번의 호출에서 도구를 넓게 부르는 것**이 빠르고 정확하다.
+  병렬이 의미 있으려면 각 작업이 여러 라운드를 거쳐 깊게 파고드는 경우여야 한다 (→ 프로젝트 4 Multi-Agent).
+- 한계: 질문 3개 × 2회라 경향만 본 것. careful은 같은 질문에서도 15.3초 / 24.9초처럼 편차가 컸다.
 
 ## 실행 방법
 ```powershell
@@ -74,8 +86,9 @@ python -m venv .venv
 copy .env.example .env   # 그다음 .env에 API 키 입력
 
 # 3. 실행
-.\.venv\Scripts\python agent.py               # CLI 대화, 신중 모드 (도구 호출 과정은 [tool] 로그로 표시)
-.\.venv\Scripts\python agent.py --mode fast   # 빠른 답변 모드. 대화 중에는 /fast, /careful 로 전환
+.\.venv\Scripts\python agent.py                  # CLI 대화, 기본(standard) 모드 (도구 호출 과정은 [tool] 로그로 표시)
+.\.venv\Scripts\python agent.py --mode careful   # fast / standard / careful. 대화 중에는 /fast, /standard, /careful 로 전환
+.\.venv\Scripts\python experiments\compare_modes.py  # 답변 방식 비교 실험 (API 호출 약 80번)
 
 # 4. 테스트 (API 호출 없음 — 가짜 클라이언트로 루프 검사)
 .\.venv\Scripts\python -m pytest
