@@ -45,6 +45,26 @@
 **`filters` 도입의 비용:** 모든 도구 스키마에 필터 4개가 들어가 요청마다 입력이 약 900~1,800 토큰 늘었다
 (Chairs 질문 2.6K → 4.4K). 조합 질문은 호출 수가 줄어 이득이지만, 단순 질문은 더 비싸졌다.
 
+## 답변 모드 (`agent.py`의 `MODES`)
+응답 시간은 LLM 왕복 횟수, 추론 토큰, 출력 길이가 좌우한다. 도구는 로컬에서 바로 실행되므로 호출 개수는 속도에 거의 영향이 없다.
+
+| | 빠른 답변 (`fast`) | 신중 (`careful`, 기본) |
+|---|---|---|
+| LLM 왕복 | 최대 2번 (도구 1라운드 → 답변) | 최대 6번 |
+| 도구 호출 | 최대 3개 (넘으면 그 호출에 error 반환) | 최대 10개 |
+| 추론 강도 | `none` | `medium` |
+| 답변 | 3~5문장, 액션 1개 | 비교 기준·기간 해석을 밝히고 액션 3개 |
+
+같은 질문으로 측정 (`gpt-5.4-mini`):
+
+| 질문 | fast | careful |
+|---|---|---|
+| Furniture 이익률이 왜 낮아? | 3.9초 / 도구 2 / 입력 4.9K — 할인 구간 원인 | 8.4초 / 도구 5 / 입력 5.6K — 하위 카테고리 + 할인 + 다른 카테고리와 비교 |
+| 지난달 매출이 왜 떨어졌어? | 4.7초 / 도구 2 / 입력 5.1K — East 지역 감소 | 18.5초 / 도구 7 / 입력 26K — Technology·East 교차, 주문·고객 수까지 |
+| Central 지역 이익률이 왜 낮아? | 4.3초 / 도구 2 / 입력 5.0K — Furniture 적자 + 고할인 | 12.1초 / 도구 10 / 입력 14K — 다른 지역 비교, 카테고리별 할인까지 |
+
+fast 모드에서 처음에는 "왜" 질문에 `get_summary`만 불러 원인을 답하지 못했다 → 지침에 "원인을 나누는 도구를 고르고, 합계는 breakdown에 이미 있다"를 넣어 해결.
+
 ## 실행 방법
 ```powershell
 # 1. 데이터: 1주차와 같은 data/Sample - Superstore.csv (git에는 포함 안 함)
@@ -54,7 +74,8 @@ python -m venv .venv
 copy .env.example .env   # 그다음 .env에 API 키 입력
 
 # 3. 실행
-.\.venv\Scripts\python agent.py   # CLI 대화 (도구 호출 과정은 [tool] 로그로 표시)
+.\.venv\Scripts\python agent.py               # CLI 대화, 신중 모드 (도구 호출 과정은 [tool] 로그로 표시)
+.\.venv\Scripts\python agent.py --mode fast   # 빠른 답변 모드. 대화 중에는 /fast, /careful 로 전환
 
 # 4. 테스트 (API 호출 없음 — 가짜 클라이언트로 루프 검사)
 .\.venv\Scripts\python -m pytest

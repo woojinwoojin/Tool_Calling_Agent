@@ -6,8 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import agent
-from agent import run_agent
+from agent import MODES, Mode, run_agent
 
 # strict 스키마라 LLM은 필터를 안 쓸 때도 모든 항목을 null로 채워 보낸다.
 NO_FILTERS = {"category": None, "sub_category": None, "region": None, "segment": None}
@@ -103,19 +102,41 @@ def test_tool_error_is_sent_back_to_model(df):
     assert "error" in json.loads(last["output"])
 
 
-def test_forces_answer_on_last_step(df, monkeypatch):
-    monkeypatch.setattr(agent, "MAX_STEPS", 2)
+def test_forces_answer_on_last_step(df):
+    mode = Mode("test", max_steps=2, max_tool_calls=10, reasoning_effort="low", guide="")
     client = FakeClient([response([function_call("get_summary", {"start_month": None, "end_month": None}, "c1")]), final_response()])
 
-    run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}])
+    run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}], mode)
 
     assert [r["tool_choice"] for r in client.requests] == ["auto", "none"]
 
 
-def test_raises_when_model_never_stops_calling_tools(df, monkeypatch):
-    monkeypatch.setattr(agent, "MAX_STEPS", 2)
+def test_raises_when_model_never_stops_calling_tools(df):
+    mode = Mode("test", max_steps=2, max_tool_calls=10, reasoning_effort="low", guide="")
     call = function_call("get_summary", {"start_month": None, "end_month": None}, "c")
     client = FakeClient([response([call]), response([call])])
 
     with pytest.raises(RuntimeError):
-        run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}])
+        run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}], mode)
+
+
+def test_fast_mode_answers_after_one_tool_round(df):
+    client = FakeClient([response([function_call("get_summary", {}, "c1")]), final_response()])
+
+    run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}], MODES["fast"])
+
+    assert [r["tool_choice"] for r in client.requests] == ["auto", "none"]
+    assert client.requests[0]["reasoning"] == {"effort": "none"}
+    assert client.requests[0]["instructions"].endswith(MODES["fast"].guide)
+
+
+def test_tool_calls_over_limit_get_error_output(df):
+    calls = [function_call("get_summary", {}, f"c{i}") for i in range(4)]
+    client = FakeClient([response(calls), final_response()])
+
+    run_agent(client, "m", df, "sys", [{"role": "user", "content": "q"}], MODES["fast"])
+
+    outputs = [json.loads(item["output"]) for item in client.requests[1]["input"] if isinstance(item, dict) and item.get("type") == "function_call_output"]
+    # 상한(3개)을 넘은 네 번째 호출도 call_id 짝을 맞추기 위해 output은 있어야 하고, 내용은 error다.
+    assert [o.get("total_sales") for o in outputs[:3]] == [400, 400, 400]
+    assert "상한" in outputs[3]["error"]
