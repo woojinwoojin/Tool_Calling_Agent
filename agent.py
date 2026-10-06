@@ -65,11 +65,12 @@ ANSWER_FORMAT = {
 
 
 def build_system_prompt(df: pd.DataFrame, currency: str) -> str:
-    # LLM이 올바른 인자(월, 카테고리 이름)를 고를 수 있도록 데이터의 범위만 알려준다.
+    # LLM이 올바른 인자(월, 필터 값)를 고를 수 있도록 데이터의 범위만 알려준다.
+    # 하위 카테고리는 개수가 많아서 넣지 않는다. 틀리면 도구의 error에 available 목록이 온다.
     data_info = {
         "period": f"{df['date'].min():%Y-%m} ~ {df['date'].max():%Y-%m}",
         "currency": currency,
-        "categories": sorted(df["category"].unique()),
+        **{f"{col}_values": sorted(df[col].unique()) for col in ("category", "region", "segment") if col in df},
     }
     return SYSTEM_PROMPT.format(data_info=json.dumps(data_info, ensure_ascii=False))
 

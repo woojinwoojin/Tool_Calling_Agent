@@ -6,11 +6,10 @@ import pytest
 from tools import (
     TOOL_FUNCTIONS,
     TOOLS,
-    category_breakdown,
+    breakdown,
     compare_periods,
     customer_analysis,
     detect_anomaly,
-    dimension_breakdown,
     discount_impact,
     get_summary,
     monthly_trend,
@@ -93,10 +92,10 @@ def test_monthly_trend_unknown_metric(df):
     assert "sales" in result["available"]
 
 
-def test_monthly_trend_filters_category(df):
-    result = monthly_trend(df, "sales", 12, category="B")
+def test_monthly_trend_filters(df):
+    result = monthly_trend(df, "sales", 12, filters={"category": "B"})
 
-    assert result["category"] == "B"
+    assert result["filters"] == {"category": "B"}
     # B는 1월에만 팔렸지만, 월 축은 전체 데이터 기간(1~4월)으로 유지된다.
     assert [(m["month"], m["value"]) for m in result["months"]] == [
         ("2024-01", 100),
@@ -106,10 +105,60 @@ def test_monthly_trend_filters_category(df):
     ]
 
 
-def test_unknown_category_hints_sub_category(df):
-    result = monthly_trend(df, "sales", 12, category="A1")
+def test_filters_combine(df):
+    # A 카테고리 중 East 지역: O1의 A1(100) + O3의 A1(100)
+    result = get_summary(df, filters={"category": "A", "region": "East", "sub_category": None, "segment": None})
 
-    assert "A1는 A의 하위 카테고리" in result["hint"]
+    assert result["total_sales"] == 200
+    assert result["filters"] == {"category": "A", "region": "East"}  # null 필터는 결과에 표시하지 않는다
+
+
+def test_filter_value_in_other_column_gets_hint(df):
+    result = get_summary(df, filters={"category": "A1"})
+
+    assert result["hint"] == "A1는 sub_category 값입니다."
+
+
+def test_filter_available_values_respect_earlier_filters(df):
+    # B 카테고리 안에는 A1이 없다 → B 안의 하위 카테고리만 보여준다.
+    result = discount_impact(df, filters={"category": "B", "sub_category": "A1"})
+
+    assert result["available"] == ["B1"]
+    assert "다른 필터와 함께" in result["hint"]
+
+
+def test_filter_on_missing_column(df):
+    result = get_summary(df, filters={"segment": "Consumer"})
+
+    assert "segment" not in result["available"]
+
+
+def test_breakdown_by_category(df):
+    rows = breakdown(df, "category")["rows"]
+
+    assert rows[0] == {"name": "A", "sales": 400, "sales_share_pct": 80.0, "profit": -10, "profit_margin_pct": -2.5}
+
+
+def test_breakdown_with_filter(df):
+    result = breakdown(df, "sub_category", filters={"category": "A"})
+
+    assert result["total"] == {"sales": 400, "profit": -10, "profit_margin_pct": -2.5}
+    assert {r["name"] for r in result["rows"]} == {"A1", "A2"}  # 매출이 둘 다 200이라 순서는 보지 않는다
+    assert sum(r["sales_share_pct"] for r in result["rows"]) == 100.0
+
+
+def test_breakdown_by_region(df):
+    result = breakdown(df, "region")
+
+    assert [(r["name"], r["sales"]) for r in result["rows"]] == [("East", 300), ("West", 200)]
+
+
+def test_breakdown_rejects_group_by_used_as_filter(df):
+    assert "이미 필터링" in breakdown(df, "category", filters={"category": "A"})["error"]
+
+
+def test_breakdown_unavailable_group_by(df):
+    assert "segment" not in breakdown(df, "segment")["available"]
 
 
 def test_compare_periods_by_category(df):
@@ -123,10 +172,11 @@ def test_compare_periods_by_category(df):
     assert rows["B"]["share_of_total_change_pct"] is None  # 전체 변화가 0이면 비중을 계산할 수 없다
 
 
-def test_compare_periods_drills_down_and_orders_by_change(df):
-    result = compare_periods(df, "2024-02", "2024-02", "2024-04", "2024-04", category="A")
+def test_compare_periods_with_filter_orders_by_change(df):
+    result = compare_periods(
+        df, "2024-02", "2024-02", "2024-04", "2024-04", group_by="sub_category", filters={"category": "A"}
+    )
 
-    assert result["level"] == "sub_category"
     assert result["total"]["sales_change"] == -100
     # A2: -200, A1: +100 → 변화 크기 순
     assert [(r["name"], r["sales_change"], r["share_of_total_change_pct"]) for r in result["rows"]] == [
@@ -136,29 +186,12 @@ def test_compare_periods_drills_down_and_orders_by_change(df):
     assert result["rows"][1]["sales_change_pct"] is None  # 기준 기간 매출 0
 
 
+def test_compare_periods_rejects_same_period(df):
+    assert "breakdown" in compare_periods(df, "2024-01", "2024-04", "2024-01", "2024-04")["error"]
+
+
 def test_compare_periods_empty_period(df):
     assert "기준" in compare_periods(df, "2030-01", "2030-01", "2024-01", "2024-01")["error"]
-
-
-def test_category_breakdown_top_level(df):
-    rows = category_breakdown(df)["rows"]
-
-    assert rows[0] == {"name": "A", "sales": 400, "sales_share_pct": 80.0, "profit": -10, "profit_margin_pct": -2.5}
-
-
-def test_category_breakdown_drills_down(df):
-    result = category_breakdown(df, category="A")
-
-    assert result["level"] == "sub_category"
-    assert result["total"] == {"sales": 400, "profit": -10, "profit_margin_pct": -2.5}
-    assert {r["name"] for r in result["rows"]} == {"A1", "A2"}  # 매출이 둘 다 200이라 순서는 보지 않는다
-    assert sum(r["sales_share_pct"] for r in result["rows"]) == 100.0
-
-
-def test_category_breakdown_unknown_category(df):
-    result = category_breakdown(df, category="Z")
-
-    assert result["available"] == ["A", "B"]
 
 
 def test_discount_impact(df):
@@ -169,34 +202,14 @@ def test_discount_impact(df):
     assert bands["41%+"]["profit_margin_pct"] == -20.0
 
 
-def test_discount_impact_by_sub_category(df):
-    result = discount_impact(df, sub_category="A1")
+def test_discount_impact_with_filters(df):
+    result = discount_impact(df, filters={"region": "West"})
 
-    assert [b["discount_band"] for b in result["bands"]] == ["0%"]
-    assert result["bands"][0]["sales"] == 200
-
-
-def test_discount_impact_sub_category_must_belong_to_category(df):
-    result = discount_impact(df, category="B", sub_category="A1")
-
-    assert result["available"] == ["B1"]
+    assert [b["discount_band"] for b in result["bands"]] == ["41%+"]
 
 
 def test_discount_impact_without_discount_column(df):
     assert "error" in discount_impact(df.drop(columns="discount"))
-
-
-def test_dimension_breakdown(df):
-    result = dimension_breakdown(df, "region")
-
-    assert result["total"]["sales"] == 500
-    assert [(r["name"], r["sales"]) for r in result["rows"]] == [("East", 300), ("West", 200)]
-
-
-def test_dimension_breakdown_unavailable_dimension(df):
-    result = dimension_breakdown(df, "segment")
-
-    assert result["available"] == ["region"]
 
 
 def test_customer_analysis_uses_first_purchase_from_all_data(df):
@@ -209,6 +222,16 @@ def test_customer_analysis_uses_first_purchase_from_all_data(df):
     assert result["repeat_customer_pct"] == 0.0  # 기간 안에서는 둘 다 주문 1번
     assert result["top_10pct_customer_sales_share_pct"] == round(200 / 300 * 100, 1)  # 최소 1명
     assert "note" not in result
+
+
+def test_customer_analysis_new_means_new_to_company(df):
+    # C1은 1월에 West에서 처음 사고, 4월에 East에서 다시 샀다.
+    df.loc[df["order_id"] == "O1", "region"] = "West"
+    result = customer_analysis(df, filters={"region": "East"}, start_month="2024-02")
+
+    # East에서는 첫 구매지만 회사 전체로는 기존 고객이다.
+    assert result["customer_count"] == 1
+    assert result["new_customers"] == 0
 
 
 def test_customer_analysis_whole_period_has_note(df):

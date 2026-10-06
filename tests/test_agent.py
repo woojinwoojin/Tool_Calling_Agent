@@ -9,6 +9,8 @@ import pytest
 import agent
 from agent import run_agent
 
+# strict 스키마라 LLM은 필터를 안 쓸 때도 모든 항목을 null로 채워 보낸다.
+NO_FILTERS = {"category": None, "sub_category": None, "region": None, "segment": None}
 FINAL = {"answer": "답변", "suggested_actions": [{"action": "A", "reason": "R", "priority": "high"}]}
 
 
@@ -71,7 +73,11 @@ def test_runs_requested_tools_and_returns_results(df):
             response(
                 [
                     function_call("get_summary", {"start_month": None, "end_month": None}, "call_1"),
-                    function_call("category_breakdown", {"category": None, "start_month": None, "end_month": None}, "call_2"),
+                    function_call(
+                        "breakdown",
+                        {"group_by": "category", "filters": NO_FILTERS, "start_month": None, "end_month": None},
+                        "call_2",
+                    ),
                 ]
             ),
             final_response(),
