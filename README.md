@@ -9,7 +9,7 @@
 ```
 
 ## 설계 결정
-- **LLM:** OpenAI Responses API(`gpt-5.4-mini`)로 루프를 먼저 완성 → 이후 Anthropic 추가하며 차이 비교
+- **LLM:** OpenAI Responses API(`gpt-5.4-mini`)로 완성. Anthropic 지원은 보류 (REPORT.md 6장)
 - **인터페이스:** CLI 대화 루프 (UI는 3주차)
 - **시작점:** 1주차 `analysis.py`를 가져와 `sub_category`, `discount` 역할 추가
 - **도구 결과:** 원본 행이 아니라 요약 숫자만 JSON으로 반환. 잘못된 인자는 예외 대신 `{"error": ...}`로 돌려줘 LLM이 스스로 고치게 함
@@ -104,4 +104,4 @@ copy .env.example .env   # 그다음 .env에 API 키 입력
 - [x] Structured Output으로 Suggested Action 생성
 
 ## 블로그 주제
-Tool Calling으로 챗봇을 Agent처럼 만드는 과정
+Tool Calling으로 챗봇을 Agent처럼 만드는 과정 — 결과와 발견은 [REPORT.md](REPORT.md)
