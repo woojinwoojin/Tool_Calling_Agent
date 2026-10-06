@@ -7,6 +7,7 @@ from tools import (
     TOOL_FUNCTIONS,
     TOOLS,
     category_breakdown,
+    compare_periods,
     discount_impact,
     get_summary,
     monthly_trend,
@@ -73,6 +74,53 @@ def test_monthly_trend_unknown_metric(df):
     assert "sales" in result["available"]
 
 
+def test_monthly_trend_filters_category(df):
+    result = monthly_trend(df, "sales", 12, category="B")
+
+    assert result["category"] == "B"
+    # B는 1월에만 팔렸지만, 월 축은 전체 데이터 기간(1~4월)으로 유지된다.
+    assert [(m["month"], m["value"]) for m in result["months"]] == [
+        ("2024-01", 100),
+        ("2024-02", 0),
+        ("2024-03", 0),
+        ("2024-04", 0),
+    ]
+
+
+def test_unknown_category_hints_sub_category(df):
+    result = monthly_trend(df, "sales", 12, category="A1")
+
+    assert "A1는 A의 하위 카테고리" in result["hint"]
+
+
+def test_compare_periods_by_category(df):
+    result = compare_periods(df, "2024-01", "2024-01", "2024-02", "2024-02")
+
+    assert result["total"]["sales_change"] == 0  # 200 → 200
+    rows = {r["name"]: r for r in result["rows"]}
+    assert rows["A"]["sales_change"] == 100
+    assert rows["A"]["sales_change_pct"] == 100.0
+    assert rows["B"]["compare_sales"] == 0  # 2월에 B 판매 없음 → 0으로 채움
+    assert rows["B"]["share_of_total_change_pct"] is None  # 전체 변화가 0이면 비중을 계산할 수 없다
+
+
+def test_compare_periods_drills_down_and_orders_by_change(df):
+    result = compare_periods(df, "2024-02", "2024-02", "2024-04", "2024-04", category="A")
+
+    assert result["level"] == "sub_category"
+    assert result["total"]["sales_change"] == -100
+    # A2: -200, A1: +100 → 변화 크기 순
+    assert [(r["name"], r["sales_change"], r["share_of_total_change_pct"]) for r in result["rows"]] == [
+        ("A2", -200, 200.0),
+        ("A1", 100, -100.0),
+    ]
+    assert result["rows"][1]["sales_change_pct"] is None  # 기준 기간 매출 0
+
+
+def test_compare_periods_empty_period(df):
+    assert "기준" in compare_periods(df, "2030-01", "2030-01", "2024-01", "2024-01")["error"]
+
+
 def test_category_breakdown_top_level(df):
     rows = category_breakdown(df)["rows"]
 
@@ -100,6 +148,19 @@ def test_discount_impact(df):
     assert set(bands) == {"0%", "1~20%", "41%+"}  # 데이터가 없는 구간은 빠진다
     assert bands["0%"]["sales"] == 200
     assert bands["41%+"]["profit_margin_pct"] == -20.0
+
+
+def test_discount_impact_by_sub_category(df):
+    result = discount_impact(df, sub_category="A1")
+
+    assert [b["discount_band"] for b in result["bands"]] == ["0%"]
+    assert result["bands"][0]["sales"] == 200
+
+
+def test_discount_impact_sub_category_must_belong_to_category(df):
+    result = discount_impact(df, category="B", sub_category="A1")
+
+    assert result["available"] == ["B1"]
 
 
 def test_discount_impact_without_discount_column(df):
