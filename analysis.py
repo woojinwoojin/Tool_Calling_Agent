@@ -21,6 +21,8 @@ class ColumnMap:
     profit: str | None = None  # 이익 (없는 데이터셋도 있음)
     sub_category: str | None = None  # 하위 카테고리
     discount: str | None = None  # 할인율 (0.2 = 20%)
+    region: str | None = None  # 지역
+    segment: str | None = None  # 고객 세그먼트
 
 
 @dataclass
@@ -44,6 +46,8 @@ SUPERSTORE = Dataset(
         profit="Profit",
         sub_category="Sub-Category",
         discount="Discount",
+        region="Region",
+        segment="Segment",
     ),
     currency="USD",
     # 이 파일은 UTF-8이 아니라 cp1252이고, 날짜는 월/일/년 형식이다.

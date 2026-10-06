@@ -8,6 +8,9 @@ from tools import (
     TOOLS,
     category_breakdown,
     compare_periods,
+    customer_analysis,
+    detect_anomaly,
+    dimension_breakdown,
     discount_impact,
     get_summary,
     monthly_trend,
@@ -27,6 +30,22 @@ def df() -> pd.DataFrame:
     df = pd.DataFrame(
         rows, columns=["date", "order_id", "customer_id", "category", "sub_category", "sales", "profit", "discount"]
     )
+    df["date"] = pd.to_datetime(df["date"])
+    df["region"] = ["East", "East", "West", "East"]
+    return df
+
+
+@pytest.fixture
+def seasonal_df() -> pd.DataFrame:
+    """3년치 월별 매출: 매년 11월 피크(계절성) + 해마다 20% 성장 + 2022-06에만 3배 급등."""
+    rows = []
+    for year in (2021, 2022, 2023):
+        for month in range(1, 13):
+            sales = 100 * (1.2 ** (year - 2021)) * (2 if month == 11 else 1)
+            if (year, month) == (2022, 6):
+                sales *= 3
+            rows.append((f"{year}-{month:02d}-15", f"O{year}{month}", f"C{month}", "A", sales))
+    df = pd.DataFrame(rows, columns=["date", "order_id", "customer_id", "category", "sales"])
     df["date"] = pd.to_datetime(df["date"])
     return df
 
@@ -165,6 +184,56 @@ def test_discount_impact_sub_category_must_belong_to_category(df):
 
 def test_discount_impact_without_discount_column(df):
     assert "error" in discount_impact(df.drop(columns="discount"))
+
+
+def test_dimension_breakdown(df):
+    result = dimension_breakdown(df, "region")
+
+    assert result["total"]["sales"] == 500
+    assert [(r["name"], r["sales"]) for r in result["rows"]] == [("East", 300), ("West", 200)]
+
+
+def test_dimension_breakdown_unavailable_dimension(df):
+    result = dimension_breakdown(df, "segment")
+
+    assert result["available"] == ["region"]
+
+
+def test_customer_analysis_uses_first_purchase_from_all_data(df):
+    result = customer_analysis(df, start_month="2024-02", end_month="2024-04")
+
+    # C2는 2월에 처음 구매(신규), C1은 1월에 이미 구매(기존)
+    assert result["new_customers"] == 1
+    assert result["returning_customers"] == 1
+    assert result["new_customer_sales_share_pct"] == round(200 / 300 * 100, 1)
+    assert result["repeat_customer_pct"] == 0.0  # 기간 안에서는 둘 다 주문 1번
+    assert result["top_10pct_customer_sales_share_pct"] == round(200 / 300 * 100, 1)  # 최소 1명
+    assert "note" not in result
+
+
+def test_customer_analysis_whole_period_has_note(df):
+    result = customer_analysis(df)
+
+    assert result["new_customers"] == result["customer_count"]
+    assert "note" in result
+
+
+def test_detect_anomaly_ignores_seasonality(seasonal_df):
+    anomalies = detect_anomaly(seasonal_df, "sales")["anomalies"]
+
+    # 매년 반복되는 11월 피크는 이상치가 아니고, 2022-06 급등만 잡혀야 한다.
+    months = [a["month"] for a in anomalies]
+    assert months[0] == "2022-06"
+    assert anomalies[0]["deviation_pct"] > 100
+    assert not any(m.endswith("-11") for m in months)
+
+
+def test_detect_anomaly_rejects_profit(df):
+    assert "profit" not in detect_anomaly(df, "profit")["available"]
+
+
+def test_detect_anomaly_needs_two_years(df):
+    assert "2년" in detect_anomaly(df, "sales")["error"]
 
 
 def test_run_tool_returns_json(df):

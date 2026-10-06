@@ -11,7 +11,12 @@ from collections.abc import Callable
 import pandas as pd
 
 METRICS = ["sales", "profit", "orders", "customers"]
+ANOMALY_METRICS = ["sales", "orders", "customers"]
+DIMENSIONS = ["region", "segment"]
 MAX_MONTHS = 36
+TOP_CUSTOMER_RATIO = 0.1  # 상위 고객 매출 비중을 볼 때의 상위 비율
+ANOMALY_STD = 2  # 기대값 대비 편차가 표준편차의 몇 배를 넘으면 이상치로 볼지
+MAX_ANOMALIES = 10
 
 # 할인율 구간: (이름, 최소 초과, 최대 이하). 0%는 따로 본다.
 DISCOUNT_BANDS = [
@@ -104,9 +109,8 @@ def get_summary(df: pd.DataFrame, start_month: str | None = None, end_month: str
     return result
 
 
-def monthly_trend(
-    df: pd.DataFrame, metric: str = "sales", last_n_months: int = 12, category: str | None = None
-) -> dict:
+def monthly_series(df: pd.DataFrame, metric: str, category: str | None) -> pd.Series | dict:
+    """지표 하나의 월별 값. 인자가 잘못되면 error dict를 돌려준다."""
     if metric not in METRICS or (metric == "profit" and "profit" not in df):
         available = [m for m in METRICS if m != "profit" or "profit" in df]
         return {"error": f"지원하지 않는 metric: {metric}", "available": available}
@@ -129,7 +133,15 @@ def monthly_trend(
     monthly = df.groupby(df["date"].dt.to_period("M")).agg(**aggs)[metric]
 
     # 주문이 없는 달도 0으로 채워야 MoM/YoY 비교 대상이 어긋나지 않는다.
-    monthly = monthly.reindex(full_range, fill_value=0)
+    return monthly.reindex(full_range, fill_value=0)
+
+
+def monthly_trend(
+    df: pd.DataFrame, metric: str = "sales", last_n_months: int = 12, category: str | None = None
+) -> dict:
+    monthly = monthly_series(df, metric, category)
+    if isinstance(monthly, dict):
+        return monthly
 
     # MoM/YoY는 전체 기간으로 계산한 뒤 자른다. 먼저 자르면 첫 달들의 비교 대상이 사라진다.
     table = pd.DataFrame({"value": monthly, "mom": monthly.pct_change(), "yoy": monthly.pct_change(periods=12)})
@@ -273,6 +285,116 @@ def discount_impact(df: pd.DataFrame, category: str | None = None, sub_category:
     return {"category": category or "전체", "sub_category": sub_category, "bands": rows}
 
 
+def dimension_breakdown(
+    df: pd.DataFrame,
+    dimension: str,
+    category: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+) -> dict:
+    available = [d for d in DIMENSIONS if d in df]
+    if dimension not in available:
+        return {"error": f"이 데이터에서 볼 수 없는 차원: {dimension}", "available": available}
+    if category is not None:
+        if error := check_category(df, category):
+            return error
+        df = df[df["category"] == category]
+    df = filter_period(df, start_month, end_month)
+    if df.empty:
+        return {"error": "해당 기간에 데이터가 없습니다."}
+
+    value_cols = ["sales", "profit"] if "profit" in df else ["sales"]
+    grouped = df.groupby(dimension)[value_cols].sum()
+    return {
+        "period": period_label(df),
+        "dimension": dimension,
+        "category": category or "전체",
+        "total": sales_profit_total(df),
+        "rows": sales_profit_rows(grouped, df["sales"].sum()),
+    }
+
+
+def customer_analysis(df: pd.DataFrame, start_month: str | None = None, end_month: str | None = None) -> dict:
+    # 신규 여부는 기간으로 거르기 전 전체 데이터에서 첫 구매 월을 봐야 알 수 있다.
+    first_month = df.groupby("customer_id")["date"].min().dt.to_period("M")
+    period = filter_period(df, start_month, end_month)
+    if period.empty:
+        return {"error": "해당 기간에 데이터가 없습니다."}
+
+    start = period["date"].min().to_period("M")
+    customers = period["customer_id"].unique()
+    new_customers = set(first_month[customers][first_month[customers] >= start].index)
+    orders_per_customer = period.groupby("customer_id")["order_id"].nunique()
+    sales_per_customer = period.groupby("customer_id")["sales"].sum().sort_values(ascending=False)
+    top_n = max(1, round(len(customers) * TOP_CUSTOMER_RATIO))
+    total_sales = period["sales"].sum()
+
+    result = {
+        "period": period_label(period),
+        "customer_count": len(customers),
+        "new_customers": len(new_customers),
+        "returning_customers": len(customers) - len(new_customers),
+        "new_customer_sales_share_pct": pct(
+            period.loc[period["customer_id"].isin(new_customers), "sales"].sum() / total_sales
+        ),
+        # 기간 안에서 주문을 2번 이상 한 고객 비율
+        "repeat_customer_pct": pct((orders_per_customer >= 2).mean()),
+        "avg_orders_per_customer": round(float(orders_per_customer.mean()), 2),
+        "avg_sales_per_customer": round(total_sales / len(customers)),
+        f"top_{round(TOP_CUSTOMER_RATIO * 100)}pct_customer_sales_share_pct": pct(
+            sales_per_customer.head(top_n).sum() / total_sales
+        ),
+    }
+    if start == first_month.min():
+        result["note"] = "기간이 데이터 시작 월부터라서 모든 고객이 신규로 집계됩니다."
+    return result
+
+
+def detect_anomaly(df: pd.DataFrame, metric: str = "sales", category: str | None = None) -> dict:
+    # 이익은 0 근처나 음수인 달이 있어 '기대값 대비 몇 %'가 수천 %로 튄다. 항상 양수인 지표만 받는다.
+    if metric not in ANOMALY_METRICS:
+        return {
+            "error": f"이상 탐지를 지원하지 않는 metric: {metric}",
+            "available": ANOMALY_METRICS,
+            "hint": "이익은 0 근처나 음수인 달이 있어 비율 편차를 계산할 수 없습니다. monthly_trend로 확인하세요.",
+        }
+    monthly = monthly_series(df, metric, category)
+    if isinstance(monthly, dict):
+        return monthly
+    if monthly.index.year.nunique() < 2:
+        return {"error": "계절성을 계산하려면 2년 이상의 데이터가 필요합니다."}
+
+    # 기대값 = 그해 월평균 × 그 달의 계절 지수.
+    # 계절 지수는 '다른 해'의 같은 달 값으로만 계산한다. 자기 자신을 넣으면 이상치가 기대값을 끌어올려 덜 튀어 보인다.
+    # 한계: 마지막 해가 일부 월만 있으면 그해 월평균이 계절성 때문에 치우칠 수 있다.
+    year = pd.Series(monthly.index.year, index=monthly.index)
+    calendar_month = pd.Series(monthly.index.month, index=monthly.index)
+    year_mean = monthly.groupby(year).transform("mean")
+    index = monthly / year_mean
+    same_month = index.groupby(calendar_month)
+    seasonal = (same_month.transform("sum") - index) / (same_month.transform("count") - 1)
+    expected = year_mean * seasonal
+    deviation = (monthly / expected - 1).replace([float("inf"), float("-inf")], float("nan"))
+
+    threshold = ANOMALY_STD * deviation.std()
+    flagged = deviation[deviation.abs() > threshold].sort_values(key=abs, ascending=False)
+    return {
+        "metric": metric,
+        "category": category or "전체",
+        "method": f"계절성과 연간 수준을 반영한 기대값 대비 편차가 표준편차의 {ANOMALY_STD}배를 넘는 달",
+        "threshold_pct": pct(threshold),
+        "anomalies": [
+            {
+                "month": str(month),
+                "value": round(monthly[month]),
+                "expected": round(expected[month]),
+                "deviation_pct": pct(deviation[month]),
+            }
+            for month in flagged.index[:MAX_ANOMALIES]
+        ],
+    }
+
+
 # ---------------------------------------------------------------- 스키마
 
 # OpenAI Responses API의 function tool 형식.
@@ -339,6 +461,33 @@ TOOLS = [
         "category 또는 sub_category로 범위를 좁힐 수 있다. 이익률이 낮은 원인이 할인인지 확인할 때 쓴다.",
         {"category": CATEGORY, "sub_category": SUB_CATEGORY},
     ),
+    function_tool(
+        "dimension_breakdown",
+        "지역(region) 또는 고객 세그먼트(segment)별 매출, 매출 비중, 이익, 이익률을 계산한다. "
+        "category로 범위를 좁힐 수 있다.",
+        {
+            "dimension": {"type": "string", "enum": DIMENSIONS, "description": "나눠 볼 기준"},
+            "category": CATEGORY,
+            "start_month": MONTH,
+            "end_month": MONTH,
+        },
+    ),
+    function_tool(
+        "customer_analysis",
+        "기간 내 고객 수, 신규/기존 고객 수와 신규 고객 매출 비중, 재구매 고객 비율(기간 내 주문 2회 이상), "
+        f"고객당 평균 주문 수와 매출, 상위 {round(TOP_CUSTOMER_RATIO * 100)}% 고객의 매출 비중을 계산한다. "
+        "신규 여부는 전체 데이터에서의 첫 구매 월로 판단한다.",
+        {"start_month": MONTH, "end_month": MONTH},
+    ),
+    function_tool(
+        "detect_anomaly",
+        "전체 기간에서 계절성과 연간 수준으로 예상한 값보다 크게 높거나 낮았던 달을 찾는다. "
+        "MoM만으로는 매년 반복되는 성수기/비수기도 급등락처럼 보이므로, 특이한 달을 찾을 때는 이 도구를 쓴다.",
+        {
+            "metric": {"type": "string", "enum": ANOMALY_METRICS, "description": "볼 지표 (이익은 지원하지 않음)"},
+            "category": CATEGORY,
+        },
+    ),
 ]
 
 TOOL_FUNCTIONS: dict[str, Callable[..., dict]] = {
@@ -347,6 +496,9 @@ TOOL_FUNCTIONS: dict[str, Callable[..., dict]] = {
     "category_breakdown": category_breakdown,
     "compare_periods": compare_periods,
     "discount_impact": discount_impact,
+    "dimension_breakdown": dimension_breakdown,
+    "customer_analysis": customer_analysis,
+    "detect_anomaly": detect_anomaly,
 }
 
 

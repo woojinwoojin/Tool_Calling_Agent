@@ -22,6 +22,11 @@
 | `category_breakdown` | `category`, `start_month`, `end_month` | 카테고리별 → (카테고리 지정 시) 하위 카테고리별 + 합계 |
 | `compare_periods` | 기준/비교 기간, `category` | 두 기간의 항목별 증감액·증감률·전체 변화 중 비중 |
 | `discount_impact` | `category`, `sub_category` | 할인율 구간별 이익률 |
+| `dimension_breakdown` | `dimension`(region/segment), `category`, 기간 | 지역·고객 세그먼트별 매출·이익 |
+| `customer_analysis` | 기간 | 신규/기존 고객, 재구매율, 상위 10% 고객 매출 비중 |
+| `detect_anomaly` | `metric`(sales/orders/customers), `category` | 계절성·연간 수준을 반영한 기대값 대비 크게 벗어난 달 |
+
+`detect_anomaly`는 이익을 지원하지 않는다. 이익은 0 근처나 음수인 달이 있어 "기대값 대비 %"가 수천 %로 튄다.
 
 ### 애매한 질문 실험에서 고친 것
 | 질문 | 문제 | 해결 |
@@ -30,9 +35,7 @@
 | "office supplies 쪽은 어때?" | 전체 매장 월별 추이를 카테고리 추이처럼 설명 | `monthly_trend`에 `category` 추가 |
 | "지난달 매출이 왜 떨어졌어?" | 도구 9번 호출(입력 11K 토큰), 증감액을 LLM이 계산 | `compare_periods` 추가 → 5번 호출(입력 7.5K 토큰) |
 | "Chairs 할인 영향 알려줘" | 하위 카테고리 미지원 → Furniture로 우회 | `discount_impact`에 `sub_category` 추가, 오류에 `hint` 추가 |
-| "지역별 매출 1위는?" | "도구를 추가하라"를 제안 액션으로 냄 | 프롬프트: 액션은 비즈니스 액션만, 근거 없으면 빈 배열 |
-
-이후 후보: `customer_analysis`, `detect_anomaly`
+| "지역별 매출 1위는?" | "도구를 추가하라"를 제안 액션으로 냄 | 프롬프트: 액션은 비즈니스 액션만, 근거 없으면 빈 배열 → 이후 `dimension_breakdown` 추가 |
 
 ## 실행 방법
 ```powershell
