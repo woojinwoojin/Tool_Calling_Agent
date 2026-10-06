@@ -1,0 +1,23 @@
+# 비밀 값 (LLM API 키 등)
+.env
+
+# 원본 데이터 (Kaggle에서 직접 다운로드 — README 참고)
+data/
+
+# 개인 작업 메모 (저장소에 올리지 않음)
+블로그 작성 방향성*.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
